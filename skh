@@ -1,0 +1,62 @@
+#!/bin/bash
+
+
+doit()
+{
+    while true
+    do
+        sleep 2
+    done
+}
+
+start()
+{
+    [ -f /var/run/skh/skh.pid ] && echo "skh alread started" && exit 1
+    doit &
+    echo $! >/var/run/skh/skh.pid
+    echo "skh started"
+    exit 0
+}
+
+stop()
+{
+    [ ! -f /var/run/skh/skh.pid ] && echo "skh not started" && exit 1
+    pid=$(cat /var/run/skh/skh.pid)
+    kill -0 $pid >/dev/null 2>&1
+    if [ "$?" = "0" ]
+    then
+        kill -9 $pid
+    else
+        rm -f /var/run/skh/skh.pid && exit 1
+    fi
+    rm -f /var/run/skh/skh.pid
+    echo "$0 stopped"
+    exit 0
+}
+
+status()
+{
+    [ ! -f /var/run/skh/skh.pid ] && echo "skh not started" && exit 1
+    pid=$(cat /var/run/skh/skh.pid)
+    kill -0 $pid >/dev/null 2>&1
+    if [ "$?" = "0" ]
+    then
+        echo "skh is running" && exit 0
+    fi
+    echo "skh is not running" && exit 1
+}
+
+[ ! -d /var/run/skh ] && mkdir /var/run/skh
+
+case $1 in
+start)
+        start $0
+        ;;
+stop)
+        stop $0
+        ;;
+status)
+        status $0
+        ;;
+esac
+

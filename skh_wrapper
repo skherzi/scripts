@@ -1,0 +1,29 @@
+#!/bin/bash
+
+
+start()
+{
+    su -l skh -c "/usr/local/bin/skh start"
+}
+
+stop()
+{
+    su -l skh -c "/usr/local/bin/skh stop"
+}
+
+status()
+{
+    su -l skh -c "/usr/local/bin/skh status"
+}
+
+case $1 in
+start)
+        start $0
+        ;;
+stop)
+        stop $0
+        ;;
+status)
+        status $0
+        ;;
+esac

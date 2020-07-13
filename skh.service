@@ -1,0 +1,12 @@
+[Unit]
+Description=skh service
+#After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/skh start
+ExecStop=/usr/local/bin/skh stop
+RemainAfterExit=yes
+
+[Install]
+#WantedBy=multi-user.target

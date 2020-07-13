@@ -1,0 +1,408 @@
+#!/bin/bash
+
+#
+# Check Network Machines
+#
+# 2011-03 - Creation - (skherzi)
+# 2011-07 - update to add groups, logs
+# 2014-07 - add group removal
+# 2017-01 - add search feature
+#
+# http://samir.kherzi.free.fr/cnm
+#
+
+cnm_home=$HOME/.cnm
+cnm_hosts_on_failure=$cnm_home/tmp/failures
+cnm_hosts_to_monitor=/tmp/bla/bla/bla
+cnm_to="foo@bar.com"
+cnm_pids=$cnm_home/tmp/pids
+cnm_log=$cnm_home/log/cnm.log
+# cnm_trace=$cnm_home/log/cnm.out
+cnm_trace=/dev/null
+cnm_group_name=""
+cnm_default_gateway=""
+
+cnm_is_first_loop=1
+cnm_send_email_on_first_loop=0
+
+cnm_add_log()
+{
+    d=$(date +"%F %H:%M:%S")
+    cnm_msg="$d - $*"
+    echo $cnm_msg >>$cnm_log
+}
+
+cnm_init()
+{
+    [ ! -d $cnm_home ] && mkdir -p $cnm_home/groups $cnm_home/tmp $cnm_home/log $cnm_home/tmp/pids
+    [ ! -d $cnm_home/groups/default ] && mkdir $cnm_home/groups/default && echo "localhost" >>$cnm_home/groups/default/hosts
+    rm -f $cnm_hosts_on_failure
+    rm -f $cnm_pid
+    cnm_default_gateway=$(netstat -nr | grep -e "^0.0.0.0" | awk '{print $2}')
+    d=$(date +"%F %H:%M:%S")
+    echo "$d - CNM Started" | mail -s "CNM - Started" $cnm_to
+    cnm_add_log "CNM started"
+    cnm_add_log "default gateway: $cnm_default_gateway"
+}
+
+cnm_notify_host_up()
+{
+    if [ "$cnm_is_first_loop" = "0" ]; then return; fi
+    d=$(date +"%F %H:%M:%S")
+    cnm_msg="$1 is up"
+    cnm_add_log $cnm_msg
+}
+
+cnm_check_flapping()
+{
+    ping -c 2 $1
+    if [ "$?" != "0" ]
+    then
+        return 1
+    else
+        return 0
+    fi
+}
+
+cnm_is_default_gateway_up()
+{
+    ping -c 1 $cnm_default_gateway && return 0 || return 1
+}
+
+
+# $1: host
+# $2: message
+cnm_notify_email_failure_on_host()
+{
+    if [ "$cnm_is_first_loop" = "1" ] 
+    then
+        if [ "$cnm_send_email_on_first_loop" = "1" ]
+        then
+            echo "$2" | mail -s "CNM - Failure on $1" $cnm_to
+        fi
+    else
+        echo "$2" | mail -s "CNM - Failure on $1" $cnm_to
+    fi
+}
+
+cnm_notify_failure_on_host()
+{
+    d=$(date +"%F %H:%M:%S")
+    cnm_msg="Can't reach $1"
+    cnm_notify_email_failure_on_host "$1" "$d - $cnm_msg"
+    cnm_add_log $cnm_msg
+}
+
+cnm_notify_end_of_failure_on_host()
+{
+    d=$(date +"%F %H:%M:%S")
+    cnm_msg="End of failure for host $1"
+    echo "$d - $cnm_msg" | mail -s "CNM - End of failure on $1" $cnm_to
+    cnm_add_log $cnm_msg
+}
+
+cnm_set_alarm_on_host()
+{
+    echo $1 >>$cnm_hosts_on_failure
+}
+
+cnm_unset_alarm_on_host()
+{
+    p=$$
+    cat $cnm_hosts_on_failure | sort -u | grep -v $1 >$cnm_home/tmp/hosts$p
+    cp $cnm_home/tmp/hosts$p $cnm_hosts_on_failure
+    rm -f $cnm_home/tmp/hosts$p
+}
+
+cnm_monitor()
+{
+    while true
+    do
+        for m in `cat $cnm_hosts_to_monitor`
+        do
+            # reload group profile
+            [ -f $cnm_home/groups/$1/profile ] && . $cnm_home/groups/$1/profile
+
+            date +"%F %H:%M:%S"
+            ping -W 8 -c 6 $m
+            if [ "$?" != "0" ]
+            then
+                # There is a failure. The next ping is kind of anti-flapping
+                ping -c 1 $m
+                if [ "$?" != "0" ]
+                then
+                    cnm_is_default_gateway_up
+                    if [ "$?" = "0" ]
+                    then
+                        grep $m $cnm_hosts_on_failure >/dev/null 2>&1
+                        if [ "$?" != "0" ]
+                        then
+                            cnm_set_alarm_on_host $m
+                            cnm_notify_failure_on_host $m
+                        fi
+                    fi
+                fi
+            else
+                # There is no failure
+                cnm_notify_host_up $m
+                grep $m $cnm_hosts_on_failure >/dev/null 2>&1
+                if [ "$?" = "0" ]
+                then
+                    cnm_unset_alarm_on_host $m
+                    cnm_notify_end_of_failure_on_host $m
+                fi
+            fi
+            sleep 0.1
+        done
+	cnm_is_first_loop=0
+	sleep 0.2
+    done
+}
+
+
+cnm_start_group()
+{
+    [ ! -d $cnm_home/groups/$1 ] && echo "The group $1 does not exist!" && return
+    [ -f $cnm_pids/$1 ] && kill -0 $(cat $cnm_pids/$1) && echo "The group $1 is already started" && return
+    cnm_add_log "starting group $1"
+    cnm_hosts_to_monitor=$cnm_home/groups/$1/hosts
+    [ -f $cnm_home/groups/$1/profile ] && . $cnm_home/groups/$1/profile
+    cnm_group_name=$1
+    cnm_monitor >>$cnm_trace 2>&1 &
+    echo $! >$cnm_pids/$1
+}
+
+cnm_start()
+{
+    if [ "$1" != "" ]
+    then
+        cnm_start_group $1
+        return
+    fi
+    cnm_init
+    for g in $(ls $cnm_home/groups)
+    do
+        cnm_start_group $g
+    done
+}
+
+cnm_stop_group()
+{
+    [ ! -d $cnm_home/groups/$1 ] && echo "The group $1 does not exist!" && return
+    [ ! -f $cnm_pids/$1 ] && echo "The group $1 is not started!" && return
+    cnm_add_log "stopping group $1"
+    kill -9 $(cat $cnm_pids/$1)
+    rm -f $cnm_pids/$1
+}
+
+cnm_stop()
+{
+    if [ "$1" != "" ]
+    then
+        cnm_stop_group $1
+        return
+    fi
+
+    for g in $(ls $cnm_pids)
+    do
+        cnm_stop_group $g
+    done
+}
+
+cnm_pad()
+{
+    w=$1
+    while [ ${#w} -lt 20 ]; do w="${w} "; done
+    echo "$w"
+}
+
+cnm_status()
+{
+    for f in $(ls $cnm_home/groups)
+    do
+        [ ! -f $cnm_pids/$f ] && echo -e "$(cnm_pad $f)[ stopped ]" && continue
+        kill -0 $(cat $cnm_pids/$f) >/dev/null 2>&1
+        if [ "$?" = "0" ]
+        then
+            echo -e "$(cnm_pad $f)[ running ]"
+        else
+            echo -e "$(cnm_pad $f)[ stopped ]"
+            rm -f $cnm_pids/$f
+        fi
+    done
+}
+
+cnm_list()
+{
+    for g in $(ls $cnm_home/groups)
+    do
+        echo "$g"
+    done
+}
+
+cnm_group_add()
+{
+    if [ "$1" = "" ]; then echo "The group name is needed!"; exit 1; fi
+    [ -d $cnm_home/groups/$1 ] && echo "The group already exists!" && exit 1
+    mkdir $cnm_home/groups/$1
+}
+
+cnm_group_remove()
+{
+    if [ "$1" = "" ]; then echo "The group name is needed!"; exit 1; fi
+    [ ! -d $cnm_home/groups/$1 ] && echo "The group $1 does not exist!" && return
+    [ -f $cnm_pids/$1 ] && cnm_add_log "stopping group $1" && kill -9 $(cat $cnm_pids/$1)
+    rm -f $cnm_pids/$1
+    rm -fr $cnm_home/groups/$1
+    cnm_add_log "Group $1 removed"
+}
+
+cnm_host_remove()
+{
+    if [ "$1" = "" ]; then echo "The host name is needed!"; exit 1; fi
+    for g in $cnm_home/groups/*
+    do
+        grep $1 ${g}/hosts >/dev/null 2>/dev/null
+        if [ "$?" = "0" ]
+        then
+            # Remove from groups
+            cat ${g}/hosts | grep -v $1 >$cnm_home/tmp/rem_hosts_tmp
+            cp $cnm_home/tmp/rem_hosts_tmp ${g}/hosts
+            rm -f $cnm_home/tmp/rem_hosts_tmp
+
+            echo "Host $1 removed from group `basename $g`"
+            cnm_add_log "Host $1 removed from group `basename $g`"
+        fi
+        cnm_unset_alarm_on_host $1
+    done
+}
+
+cnm_group_edit()
+{
+    if [ "$1" = "" ]; then echo "The group name is needed!"; exit 1; fi
+    [ ! -d $cnm_home/groups/$1 ] && echo "The group $1 does not exist!" && exit 1
+    vi $cnm_home/groups/$1/hosts
+}
+
+cnm_group_list()
+{
+    cnm_list
+}
+
+cnm_group()
+{
+    case $1 in
+        add)
+                shift
+                cnm_group_add $*
+                ;;
+        del|remove)
+                shift
+                cnm_group_remove $*
+                ;;
+        edit)
+                shift
+                cnm_group_edit $*
+                ;;
+        list)
+                shift
+                cnm_group_list $*
+                ;;
+        *)
+                cnm_usage
+                ;;
+    esac
+}
+
+cnm_host()
+{
+    case $1 in
+        del|remove)
+                shift
+                cnm_host_remove $*
+                ;;
+        *)
+                cnm_usage
+                ;;
+    esac
+}
+
+cnm_search()
+{
+    if [ "$1" = "" ]; then echo "Something needs to be specified in argument!"; exit 1; fi
+    for g in $(ls $cnm_home/groups)
+    do
+        grep -h $1 $cnm_home/groups/$g/hosts | sed "s|^|$g\t|g"
+    done
+}
+
+cnm_tail_logs()
+{
+    tail -f $cnm_log
+}
+
+cnm_usage()
+{
+     echo "cnm - Check Network Machines"
+     echo "----------------------------"
+     echo ""
+     echo "    cnm start               start daemon"
+     echo "    cnm start <group>       start only a group"
+     echo "    cnm stop                stop daemon"
+     echo "    cnm stop  <group>       stop only a group"
+     echo "    cnm status              get the status of the daemon"
+     echo "    cnm status <group>      get the status of a group"
+     echo "    cnm group add           add a new group"
+     echo "    cnm group del <group>   delete a new group"
+     echo "    cnm group edit          edit a group"
+     echo "    cnm group list          get the list of all groups"
+     echo "    cnm host  del <host>    remove a host from all groups"
+     echo "    cnm search <word>       search for a host on all groups"
+     echo "    cnm log                 tail the logs"
+     echo "    cnm trace               edit the traces"
+     echo "    cnm view                view the current failures"
+     echo "    cnm usage               get this help menu"
+     echo ""
+}
+
+case $1 in
+start)
+        shift
+	cnm_start $*
+	;;
+stop)
+        shift
+        cnm_stop $*
+	;;
+status|stat)
+	cnm_status
+	;;
+group)
+	shift
+	cnm_group $*
+	;;
+host)
+	shift
+	cnm_host $*
+	;;
+list)
+	cnm_list
+	;;
+log)
+	cnm_tail_logs
+	;;
+trace)
+	vi $cnm_trace
+	;;
+view)
+	[ -f $cnm_hosts_on_failure ] && cat $cnm_hosts_on_failure
+	;;
+search)
+	shift
+	cnm_search $*
+	;;
+*)
+	cnm_usage
+	;;
+esac
+

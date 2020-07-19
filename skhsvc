@@ -1,0 +1,126 @@
+#!/bin/bash
+
+svcname=skh_master
+svcfile=/etc/systemd/system/${svcname}.service
+scriptfile=/usr/local/bin/${svcname}_svc
+conffile=/etc/${svcname}.conf
+
+genScriptFile()
+{
+    cat >$scriptfile <<EOF
+#!/bin/bash
+
+conffile=/etc/${svcname}.conf
+
+startsvc()
+{
+    echo "Starting sub service \$svc ..."
+    systemctl start \$svc
+}
+
+stopsvc()
+{
+    echo "Stop sub service \$svc ..."
+    systemctl stop \$svc
+}
+
+
+start()
+{
+    for svc in \$(cat \$conffile)
+    do
+        startsvc
+    done
+}
+
+stop()
+{
+    for svc in \$(cat \$conffile)
+    do
+        stopsvc
+    done
+}
+
+status()
+{
+    for svc in \$(cat \$conffile)
+    do
+        systemctl -q status \$svc >/dev/null 2>&1 && echo "\$svc [Started]" || echo "\$svc [Stopped]"
+    done
+}
+
+[ ! -f \$conffile ] && touch \$conffile
+
+case \$1 in
+start)
+        start \$@
+        ;;
+stop)
+        stop \$@
+        ;;
+status)
+        status \$@
+        ;;
+esac
+EOF
+chmod +x $scriptfile
+}
+
+genServiceFile()
+{
+    cat >$svcfile <<EOF
+[Unit]
+Description=$svcname service
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=$scriptfile start
+ExecStop=$scriptfile stop
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+
+EOF
+}
+
+installService()
+{
+    [ -f $svcfile ] && echo "Service $svcname already exist ($svcfile)" && exit 1
+    genServiceFile
+    [ -f $scriptfile ] && echo "Script $scriptfile already exist ($scriptfile)" && exit 1
+    genScriptFile
+    for svc in $(cat $conffile)
+    do
+        echo "Disabling service $svc"
+        systemctl disable $svc
+    done
+    systemctl daemon-reload
+    systemctl enable $svcname
+}
+
+removeService()
+{
+    systemctl status -q $svcname >/dev/null 2>&1
+    if [ "$?" = "4" ]; then echo "Service is not installed" && exit 1; fi
+    for svc in $(cat $conffile)
+    do
+        echo "Enabling service $svc"
+        systemctl enable $svc
+    done
+    systemctl disable $svcname
+    rm -f $svcfile
+    rm -f $scriptfile
+}
+
+[ ! -f $conffile ] && touch $conffile
+case $1 in
+install)
+        installService
+        ;;
+remove)
+        removeService
+        ;;
+esac
+
